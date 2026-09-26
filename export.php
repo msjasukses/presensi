@@ -28,7 +28,7 @@ if ($type === 'guru' || $type === 'siswa') {
         $filename = 'absensi_guru_' . preg_replace('/[^a-z0-9]+/i', '_', $p['nama']);
     } else {
         $id = (int)($_GET['siswa_id'] ?? 0);
-        $taX = tahunAjaranAktif($dc);
+        $taX = tahunAjaranTerpilih($dc);
         $p = $taX ? dcSiswa($dc, (int)$taX['id'], $id) : null;
         if (!$p) die('Siswa tidak ditemukan.');
         $title = 'Laporan Absensi Siswa';
@@ -39,7 +39,10 @@ if ($type === 'guru' || $type === 'siswa') {
         $filename = 'absensi_siswa_' . preg_replace('/[^a-z0-9]+/i', '_', $p['nama']);
     }
     // Laporan per tanggal: setiap hari dalam rentang, status dari setting jadwal + catatan absensi
-    ['rows' => $lap, 'rekap' => $rekap] = laporanHarian($pdo, $tipe, $rec, $dari, $sampai);
+    $shiftLap = $tipe === 'guru'
+        ? shiftPerHari($pdo, 'guru', $p['nip'])
+        : (!empty($p['kelas_id']) ? shiftPerHari($pdo, 'siswa', (int)$p['kelas_id']) : []);
+    ['rows' => $lap, 'rekap' => $rekap] = laporanHarian($pdo, $tipe, $rec, $dari, $sampai, $shiftLap);
     $head = ['No', 'Tanggal', 'Hari', 'Jam Masuk', 'Jam Pulang', 'Status', 'Keterangan'];
     $no = 1;
     foreach ($lap as $r) {
@@ -68,13 +71,13 @@ if ($type === 'guru' || $type === 'siswa') {
         $subtitle = 'Jabatan: ' . $grup . ' | Periode: ' . $periode;
         $guru = dcGuruList($dc, $grup);
         $nipList = array_column($guru, 'nip');
-        $rekap = rekapPeriode($pdo, 'guru', $nipList, recAbsensi($pdo, 'guru', $nipList, $dari, $sampai), $dari, $sampai);
+        $rekap = rekapPeriode($pdo, 'guru', $nipList, recAbsensi($pdo, 'guru', $nipList, $dari, $sampai), $dari, $sampai, shiftPerHariBanyak($pdo, 'guru', $nipList));
         foreach ($guru as $g) $members[] = ['noind' => $g['nip'], 'nama' => $g['nama'], 'c' => $rekap[$g['nip']]];
         $head = ['No', 'NIP', 'Nama Guru', 'Hadir', 'Terlambat', 'Izin', 'Sakit', 'Dinas Luar', 'Cuti', 'Tidak Hadir', 'Total Hari'];
         $filename = 'rekap_absensi_jabatan_' . preg_replace('/[^a-z0-9]+/i', '_', $grup);
     } else {
         $id = (int)($_GET['kelas_id'] ?? 0);
-        $taX = tahunAjaranAktif($dc);
+        $taX = tahunAjaranTerpilih($dc);
         $kelas = $taX ? dcKelas($dc, (int)$taX['id'], $id) : null;
         if (!$kelas) die('Kelas tidak ditemukan.');
         $grup = $kelas['nama'];
@@ -82,7 +85,8 @@ if ($type === 'guru' || $type === 'siswa') {
         $subtitle = 'Kelas: ' . $grup . ' | Periode: ' . $periode;
         $siswa = dcSiswaList($dc, (int)$taX['id'], $id);
         $nisList = array_column($siswa, 'nis');
-        $rekap = rekapPeriode($pdo, 'siswa', $nisList, recAbsensi($pdo, 'siswa', $nisList, $dari, $sampai), $dari, $sampai);
+        $shKelas = shiftPerHari($pdo, 'siswa', $id);
+        $rekap = rekapPeriode($pdo, 'siswa', $nisList, recAbsensi($pdo, 'siswa', $nisList, $dari, $sampai), $dari, $sampai, $shKelas ? array_fill_keys($nisList, $shKelas) : []);
         foreach ($siswa as $s) $members[] = ['noind' => $s['nis'], 'nama' => $s['nama'], 'c' => $rekap[$s['nis']]];
         $head = ['No', 'NIS', 'Nama Siswa', 'Hadir', 'Terlambat', 'Izin', 'Sakit', 'Tidak Hadir', 'Total Hari'];
         $filename = 'rekap_absensi_kelas_' . preg_replace('/[^a-z0-9]+/i', '_', $grup);
@@ -100,6 +104,59 @@ if ($type === 'guru' || $type === 'siswa') {
         $body[] = $row;
     }
     $footerText = '';
+} elseif ($type === 'harian') {
+    // Laporan absensi siswa untuk SATU tanggal, cakupan per rombel atau per tingkat.
+    $taX = tahunAjaranTerpilih($dc);
+    if (!$taX) die('Tidak ada tahun ajaran di datacenter.');
+    $tanggal = $_GET['tanggal'] ?? date('Y-m-d');
+    $cakupan = ($_GET['cakupan'] ?? 'rombel') === 'tingkat' ? 'tingkat' : 'rombel';
+    $kelasId = (int)($_GET['kelas_id'] ?? 0);
+    $tingkat = (int)($_GET['tingkat'] ?? 0);
+
+    if ($cakupan === 'tingkat') {
+        $siswa = dcSiswaList($dc, (int)$taX['id'], 0, $tingkat);
+        $grup  = 'Tingkat ' . $tingkat;
+        $filename = 'laporan_harian_tingkat_' . $tingkat . '_' . $tanggal;
+    } else {
+        $kelas = dcKelas($dc, (int)$taX['id'], $kelasId);
+        if (!$kelas) die('Kelas tidak ditemukan.');
+        $siswa = dcSiswaList($dc, (int)$taX['id'], $kelasId);
+        $grup  = 'Kelas ' . $kelas['nama'];
+        $filename = 'laporan_harian_' . preg_replace('/[^a-z0-9]+/i', '_', $kelas['nama']) . '_' . $tanggal;
+    }
+
+    $hariNama = $HARI_ID[date('N', strtotime($tanggal)) - 1];
+    $title    = 'Laporan Harian Absensi Siswa';
+    $subtitle = $grup . ' | ' . $hariNama . ', ' . date('d-m-Y', strtotime($tanggal));
+
+    $nisList = array_column($siswa, 'nis');
+    $rec     = recAbsensi($pdo, 'siswa', $nisList, $tanggal, $tanggal);
+    $shiftK  = shiftPerHariBanyak($pdo, 'siswa', array_column($siswa, 'kelas_id'));
+    $kalCache = [];
+    $rekapH = rekapKosong();
+
+    $head = ['No', 'NIS', 'Nama Siswa', 'Kelas', 'Shift', 'Jam Masuk', 'Jam Pulang', 'Status', 'Keterangan'];
+    $no = 1;
+    foreach ($siswa as $s) {
+        $rid = (int)$s['kelas_id'];
+        if (!isset($kalCache[$rid])) {
+            $kalCache[$rid] = kalenderPeriode($pdo, 'siswa', $tanggal, $tanggal, $shiftK[$rid] ?? null);
+        }
+        $info = $kalCache[$rid][$tanggal] ?? ['libur' => false, 'batas' => '07:00:00', 'ket' => null, 'shift' => null];
+        $a = $rec[$s['nis']][$tanggal] ?? null;
+        ['status' => $st, 'keterangan' => $ket] = statusTanggal($info, $a);
+        $rekapH[$st]++;
+        $body[] = [
+            $no++, $s['nis'], $s['nama'], $s['kelas'], $info['shift'] ?? '-',
+            !empty($a['jam_masuk'])  ? substr($a['jam_masuk'], 0, 5)  : '-',
+            !empty($a['jam_pulang']) ? substr($a['jam_pulang'], 0, 5) : '-',
+            $STATUS_DETAIL[$st], $ket ?? '',
+        ];
+    }
+    $footerText = 'Rekap: Hadir ' . $rekapH['hadir'] . ' | Terlambat ' . $rekapH['terlambat']
+        . ' | Izin ' . $rekapH['izin'] . ' | Sakit ' . $rekapH['sakit']
+        . ' | Tidak Hadir ' . $rekapH['alpha'] . ' | Libur ' . $rekapH['libur']
+        . ' | Total ' . count($siswa) . ' siswa';
 } else {
     die('Parameter type tidak valid.');
 }

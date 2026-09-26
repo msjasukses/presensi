@@ -4,7 +4,8 @@ require_once __DIR__ . '/config.php';
 requireLogin();
 
 $msg = '';
-$tanggal = $_GET['tanggal'] ?? $_POST['tanggal'] ?? date('Y-m-d');
+// Tanggal bawaan mengikuti tahun ajaran terpilih (hari ini bila TA sedang berjalan)
+$tanggal = $_GET['tanggal'] ?? $_POST['tanggal'] ?? tanggalAcuan(tahunAjaranTerpilih($dc));
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['act'] ?? '') === 'save') {
     // absensi_guru = log event. Koreksi satu hari = tulis ulang seluruh baris

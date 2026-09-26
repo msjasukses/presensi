@@ -15,6 +15,7 @@
 --     absensi_siswa.nis          -> datacenter_v2.siswa.nis (fallback nisn)
 --     absensi_guru.nip           -> datacenter_v2.guru.nip
 --     jadwal_shift_guru.nip      -> datacenter_v2.guru.nip
+--     jadwal_shift_kelas.rombel_id -> datacenter_v2.rombongan_belajar.id
 --  (Tidak ada FOREIGN KEY lintas-database karena master berada di DB lain.)
 -- ============================================================================
 
@@ -50,7 +51,8 @@ CREATE TABLE mesin_absensi (
   tipe VARCHAR(50) DEFAULT 'Fingerprint',
   lokasi VARCHAR(100) DEFAULT NULL,
   aktif TINYINT(1) NOT NULL DEFAULT 1,
-  last_online DATETIME DEFAULT NULL COMMENT 'waktu terakhir mesin menghubungi server'
+  last_online DATETIME DEFAULT NULL COMMENT 'waktu terakhir mesin menghubungi server',
+  tarik_data DATETIME DEFAULT NULL COMMENT 'diminta kirim ulang seluruh data user & biometrik'
 );
 
 CREATE TABLE upload_log (
@@ -63,6 +65,18 @@ CREATE TABLE upload_log (
   FOREIGN KEY (mesin_id) REFERENCES mesin_absensi(id)
 );
 
+-- Kartu RFID (reader USB di halaman Layar Tap Kartu) -> siswa/guru.
+-- nomor_induk merujuk datacenter_v2 (NIS siswa / NIP guru), tanpa FK lintas-database.
+CREATE TABLE kartu_rfid (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  uid VARCHAR(32) NOT NULL COMMENT 'nomor kartu hasil normalisasi kartuNormal()',
+  tipe ENUM('siswa','guru') NOT NULL,
+  nomor_induk VARCHAR(30) NOT NULL COMMENT 'NIS (siswa) / NIP (guru)',
+  dibuat DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uk_uid (uid),
+  UNIQUE KEY uk_orang (tipe, nomor_induk)
+);
+
 CREATE TABLE hari_libur (
   id INT AUTO_INCREMENT PRIMARY KEY,
   tanggal DATE NOT NULL,
@@ -71,11 +85,25 @@ CREATE TABLE hari_libur (
   jenis ENUM('sekolah','nasional') NOT NULL DEFAULT 'sekolah'
 );
 
+-- Shift MENIMPA jadwal_absensi pada hari yang diberi shift; batas_terlambat
+-- pada shift itulah yang dipakai laporan untuk menentukan status terlambat.
 CREATE TABLE shift (
   id INT AUTO_INCREMENT PRIMARY KEY,
   nama VARCHAR(50) NOT NULL,
   jam_masuk TIME NOT NULL,
+  batas_terlambat TIME NOT NULL,
   jam_pulang TIME NOT NULL
+);
+
+-- Shift SISWA ditetapkan per KELAS (rombel), bukan per siswa.
+-- rombel_id sudah spesifik per tahun ajaran, jadi tiap TA punya penetapannya sendiri.
+CREATE TABLE jadwal_shift_kelas (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  rombel_id INT NOT NULL COMMENT 'ref datacenter_v2.rombongan_belajar.id',
+  hari TINYINT NOT NULL COMMENT '1=Senin .. 7=Minggu',
+  shift_id INT NOT NULL,
+  UNIQUE KEY uk_rombel_hari (rombel_id, hari),
+  FOREIGN KEY (shift_id) REFERENCES shift(id)
 );
 
 -- nip merujuk datacenter_v2.guru.nip (tanpa FK lintas-database)
@@ -152,7 +180,7 @@ INSERT INTO hari_libur (tanggal, tanggal_selesai, keterangan, jenis) VALUES
 ('2026-12-25', NULL, 'Hari Raya Natal', 'nasional'),
 ('2026-06-22', '2026-07-12', 'Libur Kenaikan Kelas', 'sekolah');
 
-INSERT INTO shift (nama, jam_masuk, jam_pulang) VALUES
-('Pagi','06:30:00','14:00:00'),
-('Siang','12:00:00','17:00:00'),
-('Full','06:30:00','16:00:00');
+INSERT INTO shift (nama, jam_masuk, batas_terlambat, jam_pulang) VALUES
+('Pagi','06:30:00','07:00:00','14:00:00'),
+('Siang','12:00:00','12:30:00','17:00:00'),
+('Full','06:30:00','07:00:00','16:00:00');

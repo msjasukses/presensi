@@ -7,6 +7,8 @@
 --    adms_perintah : antrean perintah yang diambil mesin lewat /iclock/getrequest
 --    mesin_pin     : pemetaan PIN mesin -> NIS/NIP, dipakai bila PIN berbeda
 --                    dari nomor induk (mis. NIP 18 digit tidak muat di mesin)
+--    adms_data_user: data user & template biometrik kiriman mesin, dipakai
+--                    untuk menyalin user beserta sidik jari/wajah/palm ke mesin lain
 -- ============================================================================
 USE absensi_sekolah;
 
@@ -43,7 +45,7 @@ CREATE TABLE IF NOT EXISTS adms_log (
 CREATE TABLE IF NOT EXISTS adms_perintah (
   id INT AUTO_INCREMENT PRIMARY KEY,
   sn VARCHAR(50) NOT NULL,
-  perintah VARCHAR(500) NOT NULL COMMENT 'isi perintah tanpa awalan C:<id>:',
+  perintah MEDIUMTEXT NOT NULL COMMENT 'isi perintah tanpa awalan C:<id>:',
   status ENUM('antre','terkirim','selesai') NOT NULL DEFAULT 'antre',
   hasil VARCHAR(100) DEFAULT NULL COMMENT 'Return= dari mesin',
   dibuat DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -58,4 +60,17 @@ CREATE TABLE IF NOT EXISTS mesin_pin (
   nomor_induk VARCHAR(30) NOT NULL COMMENT 'NIS (siswa) / NIP (guru)',
   UNIQUE KEY uk_pin (pin),
   KEY idx_induk (tipe, nomor_induk)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS adms_data_user (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  sn VARCHAR(50) NOT NULL COMMENT 'serial number mesin asal data',
+  pin VARCHAR(30) NOT NULL,
+  jenis VARCHAR(10) NOT NULL COMMENT 'USER / FP / FACE / BIODATA / USERPIC / BIOPHOTO',
+  kunci VARCHAR(30) NOT NULL DEFAULT '' COMMENT 'pembeda dalam satu jenis: nomor jari, Type-No-Index biodata, dst',
+  tipe_bio TINYINT DEFAULT NULL COMMENT 'Type BIODATA: 1=jari, 2=wajah, 7=vena jari, 8=palm, 9=wajah visible light',
+  data MEDIUMTEXT NOT NULL COMMENT 'field rekaman (JSON), nama field baku Push SDK',
+  diperbarui DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY uk_rekaman (sn, pin, jenis, kunci),
+  KEY idx_sn_jenis (sn, jenis)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

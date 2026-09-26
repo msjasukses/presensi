@@ -18,9 +18,11 @@
  *  Aksi yang dikenali:
  *    GET  ...?SN=..&options=all    -> handshake, server membalas konfigurasi
  *    POST ...?SN=..&table=ATTLOG   -> kiriman data absensi
- *    POST ...?SN=..&table=OPERLOG  -> log operasi / data user (diterima saja)
+ *    POST ...?SN=..&table=OPERLOG  -> log operasi / data user & template biometrik
+ *    POST ...?SN=..&table=BIODATA  -> template biometrik (jari/wajah/palm)
  *    GET  ...getrequest?SN=..      -> mesin meminta perintah dari server
  *    POST ...devicecmd?SN=..       -> mesin melaporkan hasil perintah
+ *    POST ...querydata?SN=..       -> jawaban DATA QUERY (firmware Push 3.x)
  *    GET  ...ping                  -> cek hidup
  *
  *  Balasan WAJIB text/plain. Untuk ATTLOG mesin menghapus data lokalnya setelah
@@ -50,8 +52,11 @@ function admsDeteksiAksi(string $jalur, string $metode, array $get): string {
     }
     // Tanpa petunjuk jalur: tebak dari bentuk permintaan.
     if ($metode === 'POST') {
-        // Kiriman data selalu menyertakan nama tabel; selain itu laporan perintah.
-        return isset($get['table']) ? 'cdata' : 'devicecmd';
+        // Kiriman data selalu menyertakan nama tabel; jawaban DATA QUERY memakai
+        // "tablename"; selain itu laporan perintah.
+        if (isset($get['table']))     return 'cdata';
+        if (isset($get['tablename'])) return 'querydata';
+        return 'devicecmd';
     }
     // GET dengan options=all adalah handshake; GET polos adalah ambil perintah.
     return isset($get['options']) ? 'cdata' : 'getrequest';
@@ -92,8 +97,29 @@ switch ($aksi) {
     // ---- Handshake / kiriman data ------------------------------------------
     case 'cdata':
         if ($metode === 'GET') {
-            catatLog($pdo, ['sn'=>$sn, 'endpoint'=>'cdata(handshake)', 'ip'=>$ip, 'sn_dikenal'=>$mesin?1:0]);
+            // Diminta tarik data user (fitur salin antar mesin): OpStamp=0 membuat
+            // mesin mengirim ulang SELURUH data user & template lewat OPERLOG/BIODATA.
+            // Stamp absensi tetap "sekarang" supaya ATTLOG lama tidak dikirim ulang.
+            $tarik = $mesin && !empty($mesin['tarik_data']);
+            catatLog($pdo, ['sn'=>$sn, 'endpoint'=>$tarik ? 'cdata(tarik user)' : 'cdata(handshake)',
+                            'ip'=>$ip, 'sn_dikenal'=>$mesin?1:0]);
             $stamp = time();
+            if ($tarik) {
+                $pdo->prepare('UPDATE mesin_absensi SET tarik_data = NULL WHERE id = ?')->execute([$mesin['id']]);
+                echo "GET OPTION FROM: $sn\r\n"
+                   . "Stamp=$stamp\r\nATTLOGStamp=$stamp\r\nATTPHOTOStamp=$stamp\r\n"
+                   . "OpStamp=0\r\nOPERLOGStamp=0\r\nBIODATAStamp=0\r\n"
+                   . "ErrorDelay=30\r\n"
+                   . "Delay=10\r\n"
+                   . "TransTimes=00:00;12:00\r\n"
+                   . "TransInterval=1\r\n"
+                   // Bentuk teks: ikut kirim user, sidik jari, wajah & foto
+                   . "TransFlag=TransData AttLog\tOpLog\tAttPhoto\tEnrollUser\tChgUser\tEnrollFP\tChgFP\tFACE\tUserPic\tBioPhoto\r\n"
+                   . "TimeZone=7\r\n"
+                   . "Realtime=1\r\n"
+                   . "Encrypt=0\r\n";
+                exit;
+            }
             echo "GET OPTION FROM: $sn\r\n"
                . "Stamp=$stamp\r\n"
                . "OpStamp=$stamp\r\n"
@@ -113,9 +139,12 @@ switch ($aksi) {
         $baris = preg_split('/\r\n|\n|\r/', trim($isi), -1, PREG_SPLIT_NO_EMPTY) ?: [];
 
         if ($tabel !== 'ATTLOG') {
-            // OPERLOG dsb belum diproses — cukup diterima agar mesin tidak mengulang.
+            // OPERLOG / BIODATA / USERINFO / FINGERTMP dsb: data user & template
+            // biometrik disimpan untuk fitur salin antar mesin; baris lain (log
+            // operasi) diabaikan. ATTPHOTO berisi biner, tidak diurai.
+            $disimpan = $tabel === 'ATTPHOTO' ? 0 : admsSimpanDataUser($pdo, $sn, $baris, $tabel);
             catatLog($pdo, ['sn'=>$sn, 'endpoint'=>'cdata', 'tabel'=>$tabel ?: 'LAIN',
-                            'jumlah'=>count($baris), 'ip'=>$ip, 'sn_dikenal'=>$mesin?1:0]);
+                            'jumlah'=>count($baris), 'disimpan'=>$disimpan, 'ip'=>$ip, 'sn_dikenal'=>$mesin?1:0]);
             echo "OK\r\n";
             exit;
         }
@@ -177,27 +206,50 @@ switch ($aksi) {
         $antre = $st->fetchAll();
         if (!$antre) { echo "OK\r\n"; exit; }
 
+        // Perintah template biometrik bisa puluhan KB; batasi ukuran satu balasan
+        // supaya buffer mesin tidak meluap. Minimal satu perintah selalu dikirim.
+        $batasByte = 32768;
         $tandai = $pdo->prepare("UPDATE adms_perintah SET status='terkirim', dikirim=NOW() WHERE id=?");
-        $keluar = '';
+        $keluar = ''; $dikirim = 0;
         foreach ($antre as $c) {
-            $keluar .= 'C:' . $c['id'] . ':' . $c['perintah'] . "\r\n";
+            $baris = 'C:' . $c['id'] . ':' . $c['perintah'] . "\r\n";
+            if ($dikirim > 0 && strlen($keluar) + strlen($baris) > $batasByte) break;
+            $keluar .= $baris;
             $tandai->execute([$c['id']]);
+            $dikirim++;
         }
-        catatLog($pdo, ['sn'=>$sn, 'endpoint'=>'getrequest', 'jumlah'=>count($antre),
+        catatLog($pdo, ['sn'=>$sn, 'endpoint'=>'getrequest', 'jumlah'=>$dikirim,
                         'ip'=>$ip, 'sn_dikenal'=>$mesin?1:0]);
         echo $keluar;
         exit;
 
     // ---- Mesin melaporkan hasil perintah ------------------------------------
     case 'devicecmd':
+        // Satu kiriman bisa berisi hasil beberapa perintah, satu baris per perintah:
+        //   ID=12&Return=0&CMD=DATA\nID=13&Return=0&CMD=DATA
         $isi = file_get_contents('php://input') ?: '';
-        parse_str(str_replace(["\r\n", "\n"], '&', trim($isi)), $data);
-        if (!empty($data['ID'])) {
-            $pdo->prepare("UPDATE adms_perintah SET status='selesai', hasil=? WHERE id=?")
-                ->execute([substr((string)($data['Return'] ?? ''), 0, 100), (int)$data['ID']]);
+        $selesai = $pdo->prepare("UPDATE adms_perintah SET status='selesai', hasil=? WHERE id=?");
+        $jml = 0;
+        foreach (preg_split('/\r\n|\n|\r/', trim($isi), -1, PREG_SPLIT_NO_EMPTY) ?: [] as $b) {
+            parse_str(trim($b), $data);
+            if (empty($data['ID'])) continue;
+            $selesai->execute([substr((string)($data['Return'] ?? ''), 0, 100), (int)$data['ID']]);
+            $jml++;
         }
-        catatLog($pdo, ['sn'=>$sn, 'endpoint'=>'devicecmd', 'ip'=>$ip, 'sn_dikenal'=>$mesin?1:0]);
+        catatLog($pdo, ['sn'=>$sn, 'endpoint'=>'devicecmd', 'jumlah'=>$jml, 'ip'=>$ip, 'sn_dikenal'=>$mesin?1:0]);
         echo "OK\r\n";
+        exit;
+
+    // ---- Jawaban DATA QUERY (firmware Push 3.x) -----------------------------
+    // POST querydata?SN=..&type=tabledata&tablename=user|biodata|templatev10
+    case 'querydata':
+        $tabel = strtoupper(trim($_GET['tablename'] ?? $_GET['table'] ?? ''));
+        $isi   = file_get_contents('php://input') ?: '';
+        $baris = preg_split('/\r\n|\n|\r/', trim($isi), -1, PREG_SPLIT_NO_EMPTY) ?: [];
+        $disimpan = admsSimpanDataUser($pdo, $sn, $baris, $tabel);
+        catatLog($pdo, ['sn'=>$sn, 'endpoint'=>'querydata', 'tabel'=>$tabel ?: null, 'jumlah'=>count($baris),
+                        'disimpan'=>$disimpan, 'ip'=>$ip, 'sn_dikenal'=>$mesin?1:0]);
+        echo strtolower($tabel ?: 'data') . '=' . count($baris) . "\r\n";
         exit;
 
     case 'ping':

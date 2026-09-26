@@ -3,18 +3,23 @@ $pageTitle = 'Info Absensi Per Kelas (Periode Tanggal)';
 require_once __DIR__ . '/includes/header.php';
 
 // Kelas (rombongan belajar) & siswa dibaca dari datacenter ($dc); rekap absensi dari $pdo.
-$ta = tahunAjaranAktif($dc);
+$ta = tahunAjaranTerpilih($dc);
 $kelasList = $ta ? dcKelasList($dc, (int)$ta['id']) : [];
 $kelasId = (int)($_GET['kelas_id'] ?? 0);
-$dari = $_GET['dari'] ?? date('Y-m-01');
-$sampai = $_GET['sampai'] ?? date('Y-m-d');
+// Rentang bawaan mengikuti tahun ajaran terpilih
+[$dariBawaan, $sampaiBawaan] = periodeBawaan($ta);
+$dari = $_GET['dari'] ?? $dariBawaan;
+$sampai = $_GET['sampai'] ?? $sampaiBawaan;
 $rows = [];
 if ($kelasId && $ta) {
     // Absensi siswa dikunci per NIS; rekap memakai aturan yang sama dengan Info Per Siswa.
     $siswa = dcSiswaList($dc, (int)$ta['id'], $kelasId);
     $nisList = array_column($siswa, 'nis');
     $rec = recAbsensi($pdo, 'siswa', $nisList, $dari, $sampai);
-    $rekap = rekapPeriode($pdo, 'siswa', $nisList, $rec, $dari, $sampai);
+    // Seluruh siswa di kelas ini memakai shift kelas yang sama
+    $shiftKelas = shiftPerHari($pdo, 'siswa', $kelasId);
+    $shiftSiswa = $shiftKelas ? array_fill_keys($nisList, $shiftKelas) : [];
+    $rekap = rekapPeriode($pdo, 'siswa', $nisList, $rec, $dari, $sampai, $shiftSiswa);
     foreach ($siswa as $s) {
         $c = $rekap[$s['nis']];
         $rows[] = [

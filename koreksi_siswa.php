@@ -4,7 +4,8 @@ require_once __DIR__ . '/config.php';
 requireLogin();
 
 $msg = '';
-$tanggal = $_GET['tanggal'] ?? $_POST['tanggal'] ?? date('Y-m-d');
+// Tanggal bawaan mengikuti tahun ajaran terpilih (hari ini bila TA sedang berjalan)
+$tanggal = $_GET['tanggal'] ?? $_POST['tanggal'] ?? tanggalAcuan(tahunAjaranTerpilih($dc));
 $kelasId = (int)($_GET['kelas_id'] ?? $_POST['kelas_id'] ?? 0);
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['act'] ?? '') === 'save') {
@@ -23,7 +24,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['act'] ?? '') === 'save') {
 }
 
 // Daftar siswa & kelas dari datacenter ($dc); catatan absensi tanggal ini dari $pdo, digabung di PHP.
-$ta = tahunAjaranAktif($dc);
+$ta = tahunAjaranTerpilih($dc);
 $kelasList = $ta ? dcKelasList($dc, (int)$ta['id']) : [];
 $siswa = $ta ? dcSiswaList($dc, (int)$ta['id'], $kelasId) : [];
 $rec = recAbsensi($pdo, 'siswa', array_column($siswa, 'nis'), $tanggal, $tanggal);

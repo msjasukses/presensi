@@ -3,11 +3,13 @@ $pageTitle = 'Info Absensi Per Siswa (Periode Tanggal)';
 require_once __DIR__ . '/includes/header.php';
 
 // Daftar siswa dibaca langsung dari datacenter ($dc); data absensi dari $pdo
-$ta = tahunAjaranAktif($dc);
+$ta = tahunAjaranTerpilih($dc);
 $siswaList = $ta ? dcSiswaList($dc, (int)$ta['id']) : [];
 $siswaId = (int)($_GET['siswa_id'] ?? 0);
-$dari = $_GET['dari'] ?? date('Y-m-01');
-$sampai = $_GET['sampai'] ?? date('Y-m-d');
+// Rentang bawaan mengikuti tahun ajaran terpilih
+[$dariBawaan, $sampaiBawaan] = periodeBawaan($ta);
+$dari = $_GET['dari'] ?? $dariBawaan;
+$sampai = $_GET['sampai'] ?? $sampaiBawaan;
 $rows = []; $rekap = rekapKosong();
 if ($siswaId && $ta) {
     // Absensi siswa dikunci per NIS (bukan id) sesuai struktur tabel absensi_siswa.
@@ -15,7 +17,9 @@ if ($siswaId && $ta) {
     if ($s) {
         // Setiap tanggal dalam rentang, status dihitung dari setting jadwal + catatan absensi
         $rec = recAbsensi($pdo, 'siswa', [$s['nis']], $dari, $sampai);
-        ['rows'=>$rows, 'rekap'=>$rekap] = laporanHarian($pdo, 'siswa', $rec[$s['nis']] ?? [], $dari, $sampai);
+        // Shift kelas siswa ini menimpa jadwal umum pada hari yang punya shift
+        $shift = !empty($s['kelas_id']) ? shiftPerHari($pdo, 'siswa', (int)$s['kelas_id']) : [];
+        ['rows'=>$rows, 'rekap'=>$rekap] = laporanHarian($pdo, 'siswa', $rec[$s['nis']] ?? [], $dari, $sampai, $shift);
     }
 }
 ?>

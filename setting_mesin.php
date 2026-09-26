@@ -4,7 +4,7 @@ require_once __DIR__ . '/config.php';
 requireLogin();
 
 $msg = ''; $err = '';
-$ta = tahunAjaranAktif($dc);
+$ta = tahunAjaranTerpilih($dc);
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $act = $_POST['act'] ?? '';
@@ -60,6 +60,92 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $n->execute([$sn]);
         $msg = $n->rowCount() . ' perintah yang masih antre dibatalkan.';
 
+    } elseif ($act === 'tarik') {
+        // Langkah 1 salin antar mesin: minta mesin sumber mengirim ulang seluruh
+        // data user + template. Penanda tarik_data dibaca saat handshake (OpStamp=0);
+        // CHECK memaksa mesin melakukan handshake itu. DATA QUERY untuk firmware
+        // Push 3.x yang menjawab lewat /iclock/querydata (firmware lama menolaknya, aman).
+        $m = $pdo->prepare('SELECT * FROM mesin_absensi WHERE id=?');
+        $m->execute([(int)$_POST['id']]);
+        $m = $m->fetch();
+        if (!$m) {
+            $err = 'Mesin tidak ditemukan.';
+        } elseif (empty($m['serial_number'])) {
+            $err = "Serial number mesin \"{$m['nama']}\" belum diisi.";
+        } else {
+            $sn = $m['serial_number'];
+            $pdo->prepare('UPDATE mesin_absensi SET tarik_data = NOW() WHERE id=?')->execute([$m['id']]);
+            $pdo->prepare("DELETE FROM adms_perintah WHERE sn=? AND status='antre'
+                           AND (perintah='CHECK' OR perintah LIKE 'DATA QUERY tablename=%')")->execute([$sn]);
+            admsAntre($pdo, $sn, 'CHECK');
+            foreach (['user', 'templatev10', 'biodata'] as $t) {
+                admsAntre($pdo, $sn, "DATA QUERY tablename=$t,fielddesc=*,filter=*");
+            }
+            $msg = "Permintaan tarik data dikirim ke mesin \"{$m['nama']}\" (SN {$sn}). Mesin akan mengirim ulang seluruh "
+                 . 'data user beserta sidik jari/wajah/palm dalam beberapa menit. Pantau jumlahnya di tabel "Data User Tersimpan per Mesin" '
+                 . '(muat ulang halaman), lalu lanjutkan ke langkah 2.';
+        }
+
+    } elseif ($act === 'salin') {
+        // Langkah 2: antrekan DATA UPDATE ke mesin tujuan dari data mesin sumber.
+        $ambil = $pdo->prepare('SELECT * FROM mesin_absensi WHERE id=?');
+        $ambil->execute([(int)($_POST['sumber_id'] ?? 0)]);  $sumber = $ambil->fetch();
+        $ambil->execute([(int)($_POST['tujuan_id'] ?? 0)]);  $tujuan = $ambil->fetch();
+        $pilih = array_intersect((array)($_POST['bio'] ?? []), ['jari', 'wajah', 'palm', 'foto', 'lain']);
+        if (!$sumber || !$tujuan) {
+            $err = 'Mesin sumber / tujuan tidak ditemukan.';
+        } elseif ($sumber['id'] == $tujuan['id']) {
+            $err = 'Mesin sumber dan tujuan tidak boleh sama.';
+        } elseif (!$tujuan['aktif'] || empty($tujuan['serial_number'])) {
+            $err = "Mesin tujuan \"{$tujuan['nama']}\" harus aktif dan serial number-nya terisi.";
+        } else {
+            try {
+                $snAsal = (string)$sumber['serial_number'];
+                $snTuju = $tujuan['serial_number'];
+                $st = $pdo->prepare("SELECT pin, jenis, tipe_bio, data FROM adms_data_user WHERE sn=?
+                                     ORDER BY FIELD(jenis,'USER','FP','FACE','BIODATA','USERPIC','BIOPHOTO'), pin, kunci");
+                $st->execute([$snAsal]);
+                $jumlah = ['user' => 0, 'jari' => 0, 'wajah' => 0, 'palm' => 0, 'foto' => 0, 'lain' => 0];
+                $adaUser = [];
+                $pdo->beginTransaction();
+                foreach ($st as $r) {
+                    $gol = admsGolonganBio($r['jenis'], $r['tipe_bio'] === null ? null : (int)$r['tipe_bio']);
+                    if ($gol !== 'user' && !in_array($gol, $pilih, true)) continue;
+                    // Template hanya diterima mesin bila user-nya sudah ada: daftarkan
+                    // dulu user yang datanya tidak ikut terkirim dari mesin sumber.
+                    if ($gol !== 'user' && !isset($adaUser[$r['pin']])) {
+                        $orang = admsPetakanPin($pdo, $dc, $r['pin']);
+                        admsAntre($pdo, $snTuju, admsPerintahUser($r['pin'], $orang['nama'] ?? ''));
+                        $adaUser[$r['pin']] = true;
+                        $jumlah['user']++;
+                    }
+                    $cmd = admsPerintahDariData($r['jenis'], json_decode($r['data'], true) ?: []);
+                    if (!$cmd) continue;
+                    admsAntre($pdo, $snTuju, $cmd);
+                    if ($gol === 'user') $adaUser[$r['pin']] = true;
+                    $jumlah[$gol]++;
+                }
+                if (!$jumlah['user']) {
+                    $pdo->rollBack();
+                    $err = "Belum ada data user dari mesin \"{$sumber['nama']}\" yang tersimpan. Jalankan langkah 1 (Tarik Data) dulu "
+                         . 'dan tunggu sampai jumlahnya muncul di tabel.';
+                } else {
+                    $label = ['user' => 'user', 'jari' => 'sidik jari', 'wajah' => 'wajah', 'palm' => 'palm', 'foto' => 'foto', 'lain' => 'biometrik lain'];
+                    $rinci = [];
+                    foreach ($jumlah as $k => $v) if ($v) $rinci[] = "$v {$label[$k]}";
+                    $ket = "Salin dari {$sumber['nama']}: " . implode(', ', $rinci);
+                    $pdo->prepare('INSERT INTO upload_log (mesin_id, jumlah_guru, jumlah_siswa, keterangan) VALUES (?,?,?,?)')
+                        ->execute([$tujuan['id'], 0, 0, mb_substr($ket, 0, 200)]);
+                    $pdo->commit();
+                    $msg = "Masuk antrean mesin \"{$tujuan['nama']}\" (SN {$snTuju}): " . implode(', ', $rinci) . '. '
+                         . 'Mesin tujuan mengambilnya bertahap tiap kali menghubungi server; pantau di panel Antrean Perintah ADMS.';
+                }
+            } catch (Throwable $ex) {
+                if ($pdo->inTransaction()) $pdo->rollBack();
+                $err = 'Salin gagal: ' . $ex->getMessage();
+            }
+        }
+
     } elseif ($act === 'upload') {
         // Upload lewat ADMS: data TIDAK dikirim langsung ke mesin. Setiap orang
         // dijadikan perintah "DATA UPDATE USERINFO" di tabel adms_perintah, lalu
@@ -81,7 +167,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $orang = [];   // tiap item: ['tipe', 'induk', 'nama']
                 $ket = '';
                 if ($scope === 'tingkat') {
-                    if (!$ta) throw new RuntimeException('Tidak ada tahun ajaran aktif di datacenter.');
+                    if (!$ta) throw new RuntimeException('Tidak ada tahun ajaran di datacenter.');
                     $tingkat = (int)($_POST['tingkat'] ?? 0);
                     if (!$tingkat) throw new RuntimeException('Tingkat kelas belum dipilih.');
                     $q = $dc->prepare("SELECT COALESCE(NULLIF(s.nis,''), s.nisn) induk, s.nama_siswa nama
@@ -94,7 +180,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     foreach ($q as $r) $orang[] = ['tipe'=>'siswa'] + $r;
                     $ket = "Siswa Per Tingkat Kelas: Tingkat $tingkat";
                 } elseif ($scope === 'rombel') {
-                    if (!$ta) throw new RuntimeException('Tidak ada tahun ajaran aktif di datacenter.');
+                    if (!$ta) throw new RuntimeException('Tidak ada tahun ajaran di datacenter.');
                     $rid = (int)($_POST['rombel_id'] ?? 0);
                     $rb = $rid ? dcKelas($dc, (int)$ta['id'], $rid) : null;
                     if (!$rb) throw new RuntimeException('Rombel belum dipilih / tidak valid.');
@@ -153,6 +239,14 @@ $antrean = [];
 foreach ($pdo->query("SELECT sn, status, COUNT(*) c, MAX(dikirim) terakhir
                       FROM adms_perintah GROUP BY sn, status") as $r) {
     $antrean[$r['sn']][$r['status']] = ['c' => (int)$r['c'], 'terakhir' => $r['terakhir']];
+}
+// Ringkasan data user & biometrik yang sudah dikirim tiap mesin (bahan salin antar mesin)
+$dataUser = [];
+foreach ($pdo->query("SELECT sn, jenis, tipe_bio, COUNT(*) c, MAX(diperbarui) terakhir
+                      FROM adms_data_user GROUP BY sn, jenis, tipe_bio") as $r) {
+    $gol = admsGolonganBio($r['jenis'], $r['tipe_bio'] === null ? null : (int)$r['tipe_bio']);
+    $dataUser[$r['sn']][$gol] = ($dataUser[$r['sn']][$gol] ?? 0) + (int)$r['c'];
+    $dataUser[$r['sn']]['terakhir'] = max($dataUser[$r['sn']]['terakhir'] ?? '', $r['terakhir']);
 }
 $tingkatList = $ta ? dcTingkatList($dc, (int)$ta['id']) : [];
 $rombelList  = $ta ? dcKelasList($dc, (int)$ta['id']) : [];
@@ -313,6 +407,86 @@ if ($ipServer && !filter_var($_SERVER['HTTP_HOST'] ?? '', FILTER_VALIDATE_IP)) {
       </div>
     </form>
     <?php endif; ?>
+  </div>
+</div>
+
+<!-- ============ Salin User & Biometrik Antar Mesin ============ -->
+<div class="card card-stat mb-4">
+  <div class="card-header bg-white fw-semibold"><i class="bi bi-files me-1"></i>Salin User + Sidik Jari / Wajah / Palm Antar Mesin</div>
+  <div class="card-body">
+    <p class="text-muted small mb-3">
+      <b>Langkah 1</b> — klik <b>Tarik Data</b> pada mesin sumber: mesin diminta mengirim ulang seluruh data user beserta
+      template biometriknya ke server. Tunggu beberapa menit sampai jumlahnya muncul di tabel (muat ulang halaman).
+      <b>Langkah 2</b> — pilih mesin sumber &amp; tujuan lalu klik <b>Salin</b>; data dikirim ke mesin tujuan lewat antrean ADMS.
+    </p>
+    <div class="table-responsive">
+    <table class="table table-sm align-middle">
+      <thead><tr><th>Mesin</th><th class="text-end">User</th><th class="text-end">Sidik Jari</th><th class="text-end">Wajah</th>
+        <th class="text-end">Palm</th><th class="text-end">Foto</th><th>Data Terakhir Diterima</th><th style="width:150px"></th></tr></thead>
+      <tbody>
+      <?php foreach ($mesinList as $m): $d = $m['serial_number'] ? ($dataUser[$m['serial_number']] ?? []) : []; ?>
+        <tr>
+          <td><?= e($m['nama']) ?><?= $m['serial_number'] ? ' <code class="small">' . e($m['serial_number']) . '</code>' : '' ?></td>
+          <?php foreach (['user', 'jari', 'wajah', 'palm', 'foto'] as $g): ?>
+            <td class="text-end"><?= (int)($d[$g] ?? 0) ?></td>
+          <?php endforeach; ?>
+          <td>
+            <?= e($d['terakhir'] ?? '—') ?>
+            <?php if (!empty($m['tarik_data'])): ?><span class="badge bg-warning text-dark ms-1">menunggu mesin</span><?php endif; ?>
+          </td>
+          <td>
+            <?php if ($m['serial_number']): ?>
+            <form method="post" onsubmit="return confirm('Minta mesin ini mengirim ulang seluruh data user & biometrik?')">
+              <input type="hidden" name="act" value="tarik"><input type="hidden" name="id" value="<?= $m['id'] ?>">
+              <button class="btn btn-sm btn-outline-primary w-100"><i class="bi bi-cloud-download me-1"></i>Tarik Data</button>
+            </form>
+            <?php endif; ?>
+          </td>
+        </tr>
+      <?php endforeach; ?>
+      <?php if (!$mesinList): ?><tr><td colspan="8" class="text-muted">Belum ada mesin absensi.</td></tr><?php endif; ?>
+      </tbody>
+    </table>
+    </div>
+
+    <?php if (count($mesinList) >= 2): ?>
+    <form method="post" class="row g-3 align-items-end" onsubmit="return confirm('Salin data user & biometrik terpilih ke mesin tujuan?')">
+      <input type="hidden" name="act" value="salin">
+      <div class="col-md-3">
+        <label class="form-label">Mesin Sumber</label>
+        <select class="form-select" name="sumber_id" required>
+          <?php foreach ($mesinList as $m): if (!$m['serial_number']) continue; ?>
+            <option value="<?= $m['id'] ?>"><?= e($m['nama']) ?> (<?= (int)($dataUser[$m['serial_number']]['user'] ?? 0) ?> user)</option>
+          <?php endforeach; ?>
+        </select>
+      </div>
+      <div class="col-md-3">
+        <label class="form-label">Mesin Tujuan</label>
+        <select class="form-select" name="tujuan_id" required>
+          <?php foreach ($activeMesin as $i => $m): if (!$m['serial_number']) continue; ?>
+            <option value="<?= $m['id'] ?>" <?= $i === 1 ? 'selected' : '' ?>><?= e($m['nama']) ?></option>
+          <?php endforeach; ?>
+        </select>
+      </div>
+      <div class="col-md-4">
+        <label class="form-label d-block">Ikut Disalin</label>
+        <?php foreach (['jari' => 'Sidik jari', 'wajah' => 'Wajah', 'palm' => 'Palm', 'foto' => 'Foto user'] as $k => $lbl): ?>
+          <div class="form-check form-check-inline">
+            <input class="form-check-input" type="checkbox" name="bio[]" value="<?= $k ?>" id="bio_<?= $k ?>" <?= $k !== 'foto' ? 'checked' : '' ?>>
+            <label class="form-check-label" for="bio_<?= $k ?>"><?= $lbl ?></label>
+          </div>
+        <?php endforeach; ?>
+      </div>
+      <div class="col-md-2">
+        <button class="btn btn-success w-100"><i class="bi bi-files me-1"></i>Salin</button>
+      </div>
+    </form>
+    <?php endif; ?>
+    <div class="text-muted small mt-3">
+      Data user (PIN, nama, kartu, password, hak akses) selalu ikut. Template hanya bisa dipakai bila <b>algoritma kedua mesin sama</b>
+      (mis. sidik jari ZKFinger v10 ≠ v12; wajah &amp; palm umumnya hanya cocok antar seri yang sama). Foto user berukuran besar,
+      jadi hanya centang bila diperlukan — pada mesin wajah <i>visible light</i> foto dapat dipakai mesin untuk membentuk ulang template wajah.
+    </div>
   </div>
 </div>
 

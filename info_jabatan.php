@@ -6,8 +6,10 @@ require_once __DIR__ . '/includes/header.php';
 // Daftar guru dari datacenter ($dc); rekap absensi dari database absensi ($pdo).
 $jabatanList = dcJabatanList($dc);
 $jabatan = trim($_GET['jabatan'] ?? '');
-$dari = $_GET['dari'] ?? date('Y-m-01');
-$sampai = $_GET['sampai'] ?? date('Y-m-d');
+// Periode bawaan mengikuti tahun ajaran terpilih
+[$dariBawaan, $sampaiBawaan] = periodeBawaan(tahunAjaranTerpilih($dc));
+$dari = $_GET['dari'] ?? $dariBawaan;
+$sampai = $_GET['sampai'] ?? $sampaiBawaan;
 $rows = [];
 if ($jabatan !== '') {
     // Rekap memakai aturan yang sama dengan Info Per Guru agar angkanya konsisten.
@@ -15,7 +17,7 @@ if ($jabatan !== '') {
     $guru = dcGuruList($dc, $jabatan);
     $nipList = array_column($guru, 'nip');
     $rec = recAbsensi($pdo, 'guru', $nipList, $dari, $sampai);
-    $rekap = rekapPeriode($pdo, 'guru', $nipList, $rec, $dari, $sampai);
+    $rekap = rekapPeriode($pdo, 'guru', $nipList, $rec, $dari, $sampai, shiftPerHariBanyak($pdo, 'guru', $nipList));
     foreach ($guru as $g) {
         $c = $rekap[$g['nip']];
         $rows[] = [

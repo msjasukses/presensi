@@ -78,8 +78,8 @@ Masuk ke menu **Comm → Cloud Server Setting / ADMS**, isi alamat server dan po
 ### Cara data mesin masuk ke laporan
 
 1. PIN pada mesin dipetakan ke orang: tabel `mesin_pin` dulu (pemetaan manual), lalu NIS/NISN siswa, lalu NIP guru.
-2. Punch state mesin (0=check-in, 1=check-out, 4/5=overtime) menjadi event kode 0/1. State lain (break-in/out) hanya disimpan mentah agar tidak tertukar dengan kode aplikasi 2–6.
-3. Scan masuk paling **awal** dan scan pulang paling **akhir** pada satu hari yang dipakai. Mesin yang tidak memakai tombol status mengirim semua scan sebagai 0 — scan kedua dan seterusnya otomatis dianggap pulang.
+2. **Status yang dikirim mesin tidak dipakai** — urutan waktu yang menentukan. Selama jam masuk tanggal itu belum terisi, scan dicatat sebagai **jam masuk**, apa pun statusnya. Setelah jam masuk terisi, scan berikutnya dicatat sebagai **jam pulang** (bila berkali-kali, scan paling akhir yang dipakai).
+3. Pengaman: scan yang terlambat dikirim tetapi jamnya lebih awal dari jam masuk tercatat menjadi jam masuk baru, dan kiriman ulang scan yang sama persis diabaikan. Punch state asli tetap tersimpan mentah di `adms_scan` untuk audit.
 4. Semua kiriman disimpan mentah di `adms_scan` sebagai jejak audit, jadi bisa diproses ulang bila pemetaan PIN diperbaiki.
 
 Pantau lewat menu **Setting Absensi → Monitor ADMS**: status online mesin, data scan per tanggal, PIN yang tidak dikenal (dengan tombol *Proses Ulang*), dan riwayat komunikasi mesin.
@@ -105,6 +105,22 @@ Tombol cek pada daftar mesin mengirim perintah `CHECK` lewat antrean ADMS, lalu 
 Cara ini menggantikan pengecekan soket TCP ke port 4370: pada ADMS mesin yang menghubungi server, sehingga mesin di balik NAT tidak bisa dijangkau dari sisi server walaupun kondisinya sehat.
 
 Karena itu **alamat IP dan port mesin tidak lagi disimpan** — mesin dikenali sepenuhnya lewat serial number. Kolom `ip` dan `port` dihapus lewat `migrasi_hapus_ip_mesin.sql`.
+
+### Absensi kartu RFID
+
+Menu **Absensi Kartu RFID** (butuh `migrasi_kartu_rfid.sql`), memakai reader RFID USB mode keyboard (mengetik nomor kartu lalu Enter):
+
+- **Daftar Kartu RFID** — pasangkan kartu ke siswa/guru: per orang, atau per kelas secara berurutan (tempel kartu → otomatis lanjut ke siswa berikutnya). Kartu yang ditempel di Layar Tap tapi belum terdaftar ikut tampil agar mudah dipasangkan. Satu orang satu kartu; nomor desimal dibuang nol depannya.
+- **Layar Tap Kartu** — halaman layar penuh untuk komputer di gerbang. Setiap tap menampilkan nama, kelas, status (masuk / terlambat / pulang / sudah absen) dan mengucapkan namanya dengan suara Bahasa Indonesia (Web Speech API; gunakan Chrome/Edge). Aturan masuk/pulang sama dengan mesin (`admsTulisAbsensi`); tap ulang dalam `KARTU_JEDA_MENIT` (10 menit) tidak ditulis. Tiap tap juga dicatat di `adms_scan` dengan `sn = 'KARTU'`. Opsional: ikut menampilkan & mengumumkan absen dari mesin sidik jari/wajah.
+
+### Salin user + sidik jari / wajah / palm antar mesin
+
+Panel **Salin User + Sidik Jari / Wajah / Palm Antar Mesin** di halaman Setting Mesin (butuh `migrasi_salin_user_mesin.sql`):
+
+1. **Tarik Data** pada mesin sumber — server menandai `tarik_data` dan mengantrekan `CHECK`. Pada handshake berikutnya server membalas `OpStamp=0` / `BIODATAStamp=0`, sehingga mesin mengirim ulang seluruh data user & template (`USER`, `FP`, `FACE`, `BIODATA`, `USERPIC`, `BIOPHOTO`; firmware Push 3.x lewat `querydata`). Semuanya disimpan di `adms_data_user`. Stamp absensi tidak direset, jadi ATTLOG lama tidak dikirim ulang.
+2. **Salin** — tiap rekaman dijadikan perintah `DATA UPDATE USERINFO / FINGERTMP / FACE / BIODATA / …` di antrean mesin tujuan. User didaftarkan lebih dulu sebelum templatenya. PIN tetap sama, jadi pemetaan `mesin_pin` berlaku di kedua mesin.
+
+Template hanya bisa dipakai bila algoritma kedua mesin sama (sidik jari ZKFinger v10 ≠ v12; wajah & palm umumnya hanya cocok antar seri yang sama). Satu balasan `getrequest` dibatasi ±32 KB agar buffer mesin tidak meluap, sehingga penyalinan ratusan user berlangsung bertahap.
 
 ### Catatan penting
 

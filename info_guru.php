@@ -3,10 +3,12 @@ $pageTitle = 'Info Absensi Per Guru (Periode Tanggal)';
 require_once __DIR__ . '/includes/header.php';
 
 // Daftar guru dibaca langsung dari datacenter ($dc); data absensi dari $pdo
+// Daftar guru tidak terikat tahun ajaran, tetapi periode laporan mengikutinya.
 $guruList = dcGuruList($dc);
 $guruId = (int)($_GET['guru_id'] ?? 0);
-$dari = $_GET['dari'] ?? date('Y-m-01');
-$sampai = $_GET['sampai'] ?? date('Y-m-d');
+[$dariBawaan, $sampaiBawaan] = periodeBawaan(tahunAjaranTerpilih($dc));
+$dari = $_GET['dari'] ?? $dariBawaan;
+$sampai = $_GET['sampai'] ?? $sampaiBawaan;
 $rows = []; $rekap = rekapKosong();
 if ($guruId) {
     // Absensi guru dikunci per NIP sesuai struktur tabel absensi_guru.
@@ -14,7 +16,9 @@ if ($guruId) {
     if ($g) {
         // Setiap tanggal dalam rentang, status dihitung dari setting jadwal + catatan absensi
         $rec = recAbsensi($pdo, 'guru', [$g['nip']], $dari, $sampai);
-        ['rows'=>$rows, 'rekap'=>$rekap] = laporanHarian($pdo, 'guru', $rec[$g['nip']] ?? [], $dari, $sampai);
+        // Shift guru ini menimpa jadwal umum pada hari yang punya shift
+        $shift = shiftPerHari($pdo, 'guru', $g['nip']);
+        ['rows'=>$rows, 'rekap'=>$rekap] = laporanHarian($pdo, 'guru', $rec[$g['nip']] ?? [], $dari, $sampai, $shift);
     }
 }
 ?>
