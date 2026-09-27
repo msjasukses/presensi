@@ -53,7 +53,7 @@ if ($jabatan !== '') {
 </div>
 <div class="card card-stat"><div class="card-body table-responsive">
   <table class="table table-hover table-sm align-middle">
-    <thead><tr><th>NIP</th><th>Nama Guru</th><th>Hadir</th><th>Terlambat</th><th>Izin</th><th>Sakit</th><th>Dinas Luar</th><th>Cuti</th><th>Tidak Hadir</th><th>Total Hari</th></tr></thead>
+    <thead><tr><th>NIP</th><th>Nama Guru</th><th>Hadir</th><th>Terlambat</th><th>Izin</th><th>Sakit</th><th>Dinas Luar</th><th>Cuti</th><th>Alpha</th><th>Total Hari</th></tr></thead>
     <tbody>
     <?php if (!$rows): ?><tr><td colspan="10" class="text-muted">Tidak ada guru pada jabatan ini.</td></tr><?php endif; ?>
     <?php foreach ($rows as $r): ?>

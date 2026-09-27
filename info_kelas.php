@@ -54,7 +54,7 @@ if ($kelasId && $ta) {
 </div>
 <div class="card card-stat"><div class="card-body table-responsive">
   <table class="table table-hover table-sm align-middle">
-    <thead><tr><th>NIS</th><th>Nama Siswa</th><th>Hadir</th><th>Terlambat</th><th>Izin</th><th>Sakit</th><th>Tidak Hadir</th><th>Total Hari</th></tr></thead>
+    <thead><tr><th>NIS</th><th>Nama Siswa</th><th>Hadir</th><th>Terlambat</th><th>Izin</th><th>Sakit</th><th>Alpha</th><th>Total Hari</th></tr></thead>
     <tbody>
     <?php if (!$rows): ?><tr><td colspan="8" class="text-muted">Tidak ada siswa pada kelas ini.</td></tr><?php endif; ?>
     <?php foreach ($rows as $r): ?>

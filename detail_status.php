@@ -17,7 +17,7 @@ if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $tanggal) || !strtotime($tanggal)) {
 
 // Pilihan filter status: kelompok (semua / masuk / tidak_hadir) atau status persis
 $pilihan = ['semua' => 'Semua', 'masuk' => 'Hadir', 'hadir' => 'Tepat Waktu', 'terlambat' => 'Terlambat',
-            'tidak_hadir' => 'Tidak Hadir', 'izin' => 'Izin', 'sakit' => 'Sakit'];
+            'tidak_hadir' => 'Tidak Hadir', 'izin' => 'Izin', 'sakit' => 'Sakit', 'alpha' => 'Alpha'];
 if ($tipe === 'guru') $pilihan += ['dinas' => 'Dinas Luar', 'cuti' => 'Cuti'];
 $pilihan += ['alpha' => 'Alpha (Tanpa Keterangan)', 'libur' => 'Libur'];
 

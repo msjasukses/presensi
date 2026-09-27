@@ -59,7 +59,7 @@ if ($type === 'guru' || $type === 'siswa') {
     $footerText = 'Rekap: Hadir ' . $rekap['hadir'] . ' | Terlambat ' . $rekap['terlambat'] . ' | Izin ' . $rekap['izin']
         . ' | Sakit ' . $rekap['sakit']
         . ($tipe === 'guru' ? ' | Dinas Luar ' . $rekap['dinas'] . ' | Cuti ' . $rekap['cuti'] : '')
-        . ' | Tidak Hadir ' . $rekap['alpha'] . ' | Libur ' . $rekap['libur'];
+        . ' | Alpha ' . $rekap['alpha'] . ' | Libur ' . $rekap['libur'];
 
 } elseif ($type === 'jabatan' || $type === 'kelas') {
     // Laporan rekap per grup. Anggota grup dari datacenter ($dc), rekap absensi dari $pdo.
@@ -73,7 +73,7 @@ if ($type === 'guru' || $type === 'siswa') {
         $nipList = array_column($guru, 'nip');
         $rekap = rekapPeriode($pdo, 'guru', $nipList, recAbsensi($pdo, 'guru', $nipList, $dari, $sampai), $dari, $sampai, shiftPerHariBanyak($pdo, 'guru', $nipList));
         foreach ($guru as $g) $members[] = ['noind' => $g['nip'], 'nama' => $g['nama'], 'c' => $rekap[$g['nip']]];
-        $head = ['No', 'NIP', 'Nama Guru', 'Hadir', 'Terlambat', 'Izin', 'Sakit', 'Dinas Luar', 'Cuti', 'Tidak Hadir', 'Total Hari'];
+        $head = ['No', 'NIP', 'Nama Guru', 'Hadir', 'Terlambat', 'Izin', 'Sakit', 'Dinas Luar', 'Cuti', 'Alpha', 'Total Hari'];
         $filename = 'rekap_absensi_jabatan_' . preg_replace('/[^a-z0-9]+/i', '_', $grup);
     } else {
         $id = (int)($_GET['kelas_id'] ?? 0);
@@ -88,7 +88,7 @@ if ($type === 'guru' || $type === 'siswa') {
         $shKelas = shiftPerHari($pdo, 'siswa', $id);
         $rekap = rekapPeriode($pdo, 'siswa', $nisList, recAbsensi($pdo, 'siswa', $nisList, $dari, $sampai), $dari, $sampai, $shKelas ? array_fill_keys($nisList, $shKelas) : []);
         foreach ($siswa as $s) $members[] = ['noind' => $s['nis'], 'nama' => $s['nama'], 'c' => $rekap[$s['nis']]];
-        $head = ['No', 'NIS', 'Nama Siswa', 'Hadir', 'Terlambat', 'Izin', 'Sakit', 'Tidak Hadir', 'Total Hari'];
+        $head = ['No', 'NIS', 'Nama Siswa', 'Hadir', 'Terlambat', 'Izin', 'Sakit', 'Alpha', 'Total Hari'];
         $filename = 'rekap_absensi_kelas_' . preg_replace('/[^a-z0-9]+/i', '_', $grup);
     }
     $no = 1;
@@ -155,7 +155,7 @@ if ($type === 'guru' || $type === 'siswa') {
     }
     $footerText = 'Rekap: Hadir ' . $rekapH['hadir'] . ' | Terlambat ' . $rekapH['terlambat']
         . ' | Izin ' . $rekapH['izin'] . ' | Sakit ' . $rekapH['sakit']
-        . ' | Tidak Hadir ' . $rekapH['alpha'] . ' | Libur ' . $rekapH['libur']
+        . ' | Alpha ' . $rekapH['alpha'] . ' | Libur ' . $rekapH['libur']
         . ' | Total ' . count($siswa) . ' siswa';
 } else {
     die('Parameter type tidak valid.');

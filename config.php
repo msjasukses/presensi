@@ -278,7 +278,7 @@ function kodeKetidakhadiran(string $tipe): array {
 /** Label kode status untuk tampilan. */
 function kodeLabel(int $kode): string {
     return [ABS_MASUK => 'Masuk', ABS_PULANG => 'Pulang', ABS_SAKIT => 'Sakit',
-            ABS_IJIN  => 'Ijin',  ABS_ALPHA  => 'Alpha (Tidak Hadir)',
+            ABS_IJIN  => 'Ijin',  ABS_ALPHA  => 'Alpha',
             ABS_DINAS => 'Dinas Luar', ABS_CUTI => 'Cuti'][$kode] ?? '-';
 }
 
@@ -900,7 +900,7 @@ function kalenderPeriode(PDO $pdo, string $tipe, string $dari, string $sampai, ?
  *   - ada jam masuk                         -> 'hadir' jika <= batas terlambat, selain itu 'terlambat'
  *   - alpha tercatat (kode 4)               -> 'alpha'
  *   - hari libur (jadwal / libur khusus)    -> 'libur' (tidak dihitung tidak hadir)
- *   - hari sekolah tanpa catatan            -> 'alpha' (Tidak Hadir)
+ *   - hari sekolah tanpa catatan            -> 'alpha'
  */
 function statusTanggal(array $info, ?array $r): array {
     $jamMasuk = $r['jam_masuk'] ?? null;
@@ -1097,7 +1097,7 @@ function e($s): string { return htmlspecialchars((string)$s, ENT_QUOTES, 'UTF-8'
 
 $HARI_ID = ['Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu', 'Minggu'];
 $STATUS_LIST = ['hadir' => 'Hadir', 'terlambat' => 'Terlambat', 'izin' => 'Izin', 'sakit' => 'Sakit',
-                'dinas' => 'Dinas Luar', 'cuti' => 'Cuti', 'alpha' => 'Tidak Hadir'];
+                'dinas' => 'Dinas Luar', 'cuti' => 'Cuti', 'alpha' => 'Alpha'];
 // Laporan harian (termasuk "Libur"). Warna dipakai sebagai kelas badge Bootstrap.
 $STATUS_DETAIL = $STATUS_LIST + ['libur' => 'Libur'];
 $STATUS_WARNA  = ['hadir'=>'success', 'terlambat'=>'warning text-dark', 'izin'=>'info', 'sakit'=>'primary',

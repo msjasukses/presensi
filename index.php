@@ -105,7 +105,7 @@ const grafik = new Chart(document.getElementById('chartAbsensi'), {
       { label: 'Sakit',       data: <?= json_encode($series['sakit']) ?>,     backgroundColor: '#a855f7' },
       { label: 'Dinas Luar',  data: <?= json_encode($series['dinas']) ?>,     backgroundColor: '#0f172a' },
       { label: 'Cuti',        data: <?= json_encode($series['cuti']) ?>,      backgroundColor: '#64748b' },
-      { label: 'Tidak Hadir', data: <?= json_encode($series['alpha']) ?>,     backgroundColor: '#ef4444' }
+      { label: 'Alpha',       data: <?= json_encode($series['alpha']) ?>,     backgroundColor: '#ef4444' }
     ]
   },
   options: {

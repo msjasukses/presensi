@@ -64,7 +64,7 @@ require_once __DIR__ . '/includes/header.php';
               <?php endforeach; ?>
             </tbody>
           </table>
-          <div class="text-muted small">Centang <b>Libur</b> untuk hari tanpa jam sekolah — hari itu tampil <b>Libur</b> di laporan (bukan Tidak Hadir).</div>
+          <div class="text-muted small">Centang <b>Libur</b> untuk hari tanpa jam sekolah — hari itu tampil <b>Libur</b> di laporan (bukan Alpha).</div>
         </div>
       </div>
     </div>
