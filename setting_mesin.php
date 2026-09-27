@@ -3,6 +3,47 @@ $pageTitle = 'Setting Mesin Absensi & Upload Data';
 require_once __DIR__ . '/config.php';
 requireLogin();
 
+/**
+ * Daftar orang menurut pilihan "Jenis Data" (dipakai upload & hapus user).
+ * @return array{0: array<array{tipe:string, induk:string, nama:string}>, 1: string} [orang, keterangan]
+ */
+function orangPerScope(PDO $dc, ?array $ta, string $scope, array $in): array {
+    $orang = [];
+    if ($scope === 'tingkat') {
+        if (!$ta) throw new RuntimeException('Tidak ada tahun ajaran di datacenter.');
+        $tingkat = (int)($in['tingkat'] ?? 0);
+        if (!$tingkat) throw new RuntimeException('Tingkat kelas belum dipilih.');
+        $q = $dc->prepare("SELECT COALESCE(NULLIF(s.nis,''), s.nisn) induk, s.nama_siswa nama
+            FROM siswa s
+            JOIN siswa_rombel sr ON sr.siswa_id=s.id AND sr.tahun_ajaran_id=?
+            JOIN rombongan_belajar rb ON rb.id=sr.rombongan_belajar_id
+            WHERE rb.tingkat=? AND s.is_aktif=1 AND s.status_siswa='Aktif'
+            ORDER BY s.nama_siswa");
+        $q->execute([$ta['id'], $tingkat]);
+        foreach ($q as $r) $orang[] = ['tipe'=>'siswa'] + $r;
+        return [$orang, "Siswa Per Tingkat Kelas: Tingkat $tingkat"];
+    }
+    if ($scope === 'rombel') {
+        if (!$ta) throw new RuntimeException('Tidak ada tahun ajaran di datacenter.');
+        $rid = (int)($in['rombel_id'] ?? 0);
+        $rb = $rid ? dcKelas($dc, (int)$ta['id'], $rid) : null;
+        if (!$rb) throw new RuntimeException('Rombel belum dipilih / tidak valid.');
+        foreach (dcSiswaList($dc, (int)$ta['id'], $rid) as $s) {
+            $orang[] = ['tipe'=>'siswa', 'induk'=>$s['nis'], 'nama'=>$s['nama']];
+        }
+        return [$orang, "Siswa Per Rombel: " . $rb['nama']];
+    }
+    if ($scope === 'jabatan') {
+        $jab = trim($in['jabatan'] ?? '');
+        if ($jab === '') throw new RuntimeException('Jabatan belum dipilih.');
+        foreach (dcGuruList($dc, $jab) as $g) {
+            $orang[] = ['tipe'=>'guru', 'induk'=>$g['nip'], 'nama'=>$g['nama']];
+        }
+        return [$orang, "Guru Per Jabatan: $jab"];
+    }
+    throw new RuntimeException('Jenis data tidak valid.');
+}
+
 $msg = ''; $err = '';
 $ta = tahunAjaranTerpilih($dc);
 
@@ -146,6 +187,94 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
         }
 
+    } elseif ($act === 'hapus_user') {
+        // Hapus user dari mesin lewat ADMS: tiap PIN dijadikan perintah DATA DELETE
+        // di antrean; mesin mengambilnya sendiri. Data absensi di aplikasi TIDAK
+        // ikut terhapus, begitu pula pemetaan mesin_pin (PIN tetap dipakai mesin lain).
+        $ambil = $pdo->prepare('SELECT * FROM mesin_absensi WHERE id=?');
+        $ambil->execute([(int)($_POST['mesin_id'] ?? 0)]);
+        $mesin = $ambil->fetch();
+        $scope = $_POST['scope'] ?? '';
+        $yang  = in_array($_POST['yang'] ?? '', ['user', 'biometrik', 'jari', 'wajah'], true) ? $_POST['yang'] : 'user';
+        if (!$mesin) {
+            $err = 'Mesin tidak ditemukan.';
+        } elseif (empty($mesin['serial_number'])) {
+            $err = "Serial number mesin \"{$mesin['nama']}\" belum diisi.";
+        } else {
+            try {
+                $sn = $mesin['serial_number'];
+                $target = [];   // pin => nama
+                if ($scope === 'pilih') {
+                    foreach ((array)($_POST['pins'] ?? []) as $p) {
+                        $p = trim((string)$p);
+                        if ($p !== '') $target[$p] = $p;
+                    }
+                    // Nama diambil dari data user kiriman mesin (hasil Tarik Data)
+                    if ($target) {
+                        $in = implode(',', array_fill(0, count($target), '?'));
+                        $st = $pdo->prepare("SELECT pin, data FROM adms_data_user WHERE sn=? AND jenis='USER' AND pin IN ($in)");
+                        $st->execute([$sn, ...array_keys($target)]);
+                        foreach ($st as $r) $target[$r['pin']] = (json_decode($r['data'], true)['Name'] ?? '') ?: $r['pin'];
+                    }
+                    $ket = count($target) . ' user terpilih';
+                } elseif ($scope === 'pin') {
+                    foreach (preg_split('/[\s,;]+/', (string)($_POST['pin_manual'] ?? ''), -1, PREG_SPLIT_NO_EMPTY) as $p) {
+                        if (!preg_match('/^[0-9A-Za-z]{1,24}$/', $p)) throw new RuntimeException("PIN \"$p\" tidak valid.");
+                        $target[$p] = $p;
+                    }
+                    $ket = 'PIN: ' . implode(', ', array_slice(array_keys($target), 0, 10)) . (count($target) > 10 ? ', …' : '');
+                } else {
+                    [$orang, $ket] = orangPerScope($dc, $ta, $scope, $_POST);
+                    foreach ($orang as $o) {
+                        if (($o['induk'] ?? '') === '') continue;
+                        $target[admsCariPin($pdo, $o['tipe'], $o['induk'])] = $o['nama'];
+                    }
+                }
+
+                if (!$target) {
+                    $err = 'Tidak ada user yang dipilih untuk dihapus.';
+                } else {
+                    $labelYang = ['user' => 'user beserta sidik jari/wajah/kartu', 'biometrik' => 'semua biometrik (user tetap ada)',
+                                  'jari' => 'sidik jari saja', 'wajah' => 'wajah saja'][$yang];
+                    // Salinan data user di server (adms_data_user) ikut disesuaikan
+                    $hapusData = match ($yang) {
+                        'user'      => "DELETE FROM adms_data_user WHERE sn=? AND pin=?",
+                        'biometrik' => "DELETE FROM adms_data_user WHERE sn=? AND pin=? AND jenis<>'USER'",
+                        'jari'      => "DELETE FROM adms_data_user WHERE sn=? AND pin=? AND (jenis='FP' OR (jenis='BIODATA' AND tipe_bio=1))",
+                        'wajah'     => "DELETE FROM adms_data_user WHERE sn=? AND pin=? AND (jenis='FACE' OR (jenis='BIODATA' AND tipe_bio IN (2,9)))",
+                    };
+                    $hapusData = $pdo->prepare($hapusData);
+                    $pdo->beginTransaction();
+                    // Buang perintah upload/salin yang masih antre untuk PIN ini, supaya
+                    // user tidak didaftarkan lagi sesudah dihapus.
+                    $buangAntre = $pdo->prepare("DELETE FROM adms_perintah WHERE sn=? AND status='antre'
+                                                 AND perintah LIKE 'DATA UPDATE %' AND (perintah LIKE ? OR perintah LIKE ?)");
+                    foreach ($target as $pin => $nama) {
+                        $pin = (string)$pin;
+                        if ($yang === 'user') {
+                            $buangAntre->execute([$sn, "% PIN=$pin\t%", "% Pin=$pin\t%"]);
+                            admsAntre($pdo, $sn, admsPerintahHapusUser($pin));
+                        } else {
+                            foreach (admsPerintahHapusBiometrik($pin, $yang === 'biometrik' ? 'semua' : $yang) as $c) admsAntre($pdo, $sn, $c);
+                        }
+                        $hapusData->execute([$sn, $pin]);
+                    }
+                    $pdo->prepare('INSERT INTO upload_log (mesin_id, jumlah_guru, jumlah_siswa, keterangan) VALUES (?,?,?,?)')
+                        ->execute([$mesin['id'], 0, 0, mb_substr("HAPUS $labelYang — $ket (" . count($target) . ' user)', 0, 200)]);
+                    $pdo->commit();
+
+                    $contoh = [];
+                    foreach (array_slice($target, 0, 3, true) as $pin => $nama) $contoh[] = "$nama (PIN $pin)";
+                    $msg = count($target) . " perintah hapus ($labelYang) masuk antrean mesin \"{$mesin['nama']}\" (SN $sn): "
+                         . implode(', ', $contoh) . (count($target) > 3 ? ', …' : '') . '. '
+                         . 'Data absensi di aplikasi tidak ikut terhapus. Pantau hasilnya di panel Antrean Perintah ADMS.';
+                }
+            } catch (Throwable $ex) {
+                if ($pdo->inTransaction()) $pdo->rollBack();
+                $err = 'Hapus gagal: ' . $ex->getMessage();
+            }
+        }
+
     } elseif ($act === 'upload') {
         // Upload lewat ADMS: data TIDAK dikirim langsung ke mesin. Setiap orang
         // dijadikan perintah "DATA UPDATE USERINFO" di tabel adms_perintah, lalu
@@ -164,40 +293,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $err = "Serial number mesin \"{$mesin['nama']}\" belum diisi. ADMS mengenali mesin lewat serial number — isi dulu lewat tombol Edit.";
         } else {
             try {
-                $orang = [];   // tiap item: ['tipe', 'induk', 'nama']
-                $ket = '';
-                if ($scope === 'tingkat') {
-                    if (!$ta) throw new RuntimeException('Tidak ada tahun ajaran di datacenter.');
-                    $tingkat = (int)($_POST['tingkat'] ?? 0);
-                    if (!$tingkat) throw new RuntimeException('Tingkat kelas belum dipilih.');
-                    $q = $dc->prepare("SELECT COALESCE(NULLIF(s.nis,''), s.nisn) induk, s.nama_siswa nama
-                        FROM siswa s
-                        JOIN siswa_rombel sr ON sr.siswa_id=s.id AND sr.tahun_ajaran_id=?
-                        JOIN rombongan_belajar rb ON rb.id=sr.rombongan_belajar_id
-                        WHERE rb.tingkat=? AND s.is_aktif=1 AND s.status_siswa='Aktif'
-                        ORDER BY s.nama_siswa");
-                    $q->execute([$ta['id'], $tingkat]);
-                    foreach ($q as $r) $orang[] = ['tipe'=>'siswa'] + $r;
-                    $ket = "Siswa Per Tingkat Kelas: Tingkat $tingkat";
-                } elseif ($scope === 'rombel') {
-                    if (!$ta) throw new RuntimeException('Tidak ada tahun ajaran di datacenter.');
-                    $rid = (int)($_POST['rombel_id'] ?? 0);
-                    $rb = $rid ? dcKelas($dc, (int)$ta['id'], $rid) : null;
-                    if (!$rb) throw new RuntimeException('Rombel belum dipilih / tidak valid.');
-                    foreach (dcSiswaList($dc, (int)$ta['id'], $rid) as $s) {
-                        $orang[] = ['tipe'=>'siswa', 'induk'=>$s['nis'], 'nama'=>$s['nama']];
-                    }
-                    $ket = "Siswa Per Rombel: " . $rb['nama'];
-                } elseif ($scope === 'jabatan') {
-                    $jab = trim($_POST['jabatan'] ?? '');
-                    if ($jab === '') throw new RuntimeException('Jabatan belum dipilih.');
-                    foreach (dcGuruList($dc, $jab) as $g) {
-                        $orang[] = ['tipe'=>'guru', 'induk'=>$g['nip'], 'nama'=>$g['nama']];
-                    }
-                    $ket = "Guru Per Jabatan: $jab";
-                } else {
-                    throw new RuntimeException('Jenis data upload tidak valid.');
-                }
+                [$orang, $ket] = orangPerScope($dc, $ta, $scope, $_POST);
 
                 if (!$orang) {
                     $err = "Tidak ada data untuk diupload ($ket).";
@@ -247,6 +343,18 @@ foreach ($pdo->query("SELECT sn, jenis, tipe_bio, COUNT(*) c, MAX(diperbarui) te
     $gol = admsGolonganBio($r['jenis'], $r['tipe_bio'] === null ? null : (int)$r['tipe_bio']);
     $dataUser[$r['sn']][$gol] = ($dataUser[$r['sn']][$gol] ?? 0) + (int)$r['c'];
     $dataUser[$r['sn']]['terakhir'] = max($dataUser[$r['sn']]['terakhir'] ?? '', $r['terakhir']);
+}
+// Daftar user per mesin (hasil Tarik Data) untuk pilihan hapus user
+$userMesin = [];
+foreach ($pdo->query("SELECT sn, pin, JSON_UNQUOTE(JSON_EXTRACT(data, '$.Name')) nama
+                      FROM adms_data_user WHERE jenis='USER' ORDER BY sn, CAST(pin AS UNSIGNED), pin") as $r) {
+    $userMesin[$r['sn']][$r['pin']] = ['nama' => $r['nama'] ?? '', 'jari' => 0, 'wajah' => 0, 'palm' => 0];
+}
+foreach ($pdo->query("SELECT sn, pin, jenis, tipe_bio, COUNT(*) c FROM adms_data_user
+                      WHERE jenis<>'USER' GROUP BY sn, pin, jenis, tipe_bio") as $r) {
+    if (!isset($userMesin[$r['sn']][$r['pin']])) continue;
+    $gol = admsGolonganBio($r['jenis'], $r['tipe_bio'] === null ? null : (int)$r['tipe_bio']);
+    if (isset($userMesin[$r['sn']][$r['pin']][$gol])) $userMesin[$r['sn']][$r['pin']][$gol] += (int)$r['c'];
 }
 $tingkatList = $ta ? dcTingkatList($dc, (int)$ta['id']) : [];
 $rombelList  = $ta ? dcKelasList($dc, (int)$ta['id']) : [];
@@ -403,6 +511,117 @@ if ($ipServer && !filter_var($_SERVER['HTTP_HOST'] ?? '', FILTER_VALIDATE_IP)) {
           Data dikirim lewat <b>ADMS</b>: tiap orang menjadi perintah <code>DATA UPDATE USERINFO</code> di antrean,
           lalu mesin mengambilnya sendiri. PIN memakai nomor induk bila muat (maks 9 digit angka);
           NIP yang terlalu panjang diberi PIN dari blok 900001 dan dicatat di <code>mesin_pin</code>.
+        </span>
+      </div>
+    </form>
+    <?php endif; ?>
+  </div>
+</div>
+
+<!-- ============ Hapus User dari Mesin ============ -->
+<div class="card card-stat mb-4 border-danger-subtle">
+  <div class="card-header bg-white fw-semibold text-danger"><i class="bi bi-person-x me-1"></i>Hapus User dari Mesin</div>
+  <div class="card-body">
+    <?php $mesinBerSn = array_values(array_filter($mesinList, fn($m) => $m['serial_number'])); ?>
+    <?php if (!$mesinBerSn): ?>
+      <div class="text-muted">Belum ada mesin dengan serial number.</div>
+    <?php else: ?>
+    <form method="post" id="formHapus" class="row g-3">
+      <input type="hidden" name="act" value="hapus_user">
+      <div class="col-md-4">
+        <label class="form-label">Mesin</label>
+        <select class="form-select" name="mesin_id" id="hp_mesin" onchange="hpTampil()">
+          <?php foreach ($mesinBerSn as $m): ?>
+            <option value="<?= $m['id'] ?>" data-sn="<?= e($m['serial_number']) ?>"><?= e($m['nama']) ?> — SN <?= e($m['serial_number']) ?></option>
+          <?php endforeach; ?>
+        </select>
+      </div>
+      <div class="col-md-4">
+        <label class="form-label">Pilih User</label>
+        <select class="form-select" name="scope" id="hp_scope" onchange="hpTampil()">
+          <option value="pilih">Pilih dari daftar user di mesin</option>
+          <option value="rombel">Siswa — Per Rombel</option>
+          <option value="tingkat">Siswa — Per Tingkat Kelas</option>
+          <option value="jabatan">Guru — Per Jabatan</option>
+          <option value="pin">Ketik PIN manual</option>
+        </select>
+      </div>
+      <div class="col-md-4">
+        <label class="form-label">Yang Dihapus</label>
+        <select class="form-select" name="yang" id="hp_yang">
+          <option value="user">User beserta sidik jari, wajah &amp; kartu</option>
+          <option value="biometrik">Semua biometrik saja (user tetap ada)</option>
+          <option value="jari">Sidik jari saja</option>
+          <option value="wajah">Wajah saja</option>
+        </select>
+      </div>
+
+      <div class="col-12 hp-wrap" data-scope="rombel">
+        <select class="form-select" name="rombel_id">
+          <?php foreach ($rombelList as $rb): ?><option value="<?= $rb['id'] ?>"><?= e($rb['nama']) ?> — Tingkat <?= e($rb['tingkat']) ?></option><?php endforeach; ?>
+          <?php if (!$rombelList): ?><option value="">(tidak ada rombel)</option><?php endif; ?>
+        </select>
+      </div>
+      <div class="col-12 hp-wrap" data-scope="tingkat">
+        <select class="form-select" name="tingkat">
+          <?php foreach ($tingkatList as $t): ?><option value="<?= $t ?>">Tingkat <?= $t ?></option><?php endforeach; ?>
+          <?php if (!$tingkatList): ?><option value="">(tidak ada kelas)</option><?php endif; ?>
+        </select>
+      </div>
+      <div class="col-12 hp-wrap" data-scope="jabatan">
+        <select class="form-select" name="jabatan">
+          <?php foreach ($jabatanList as $jb): ?><option value="<?= e($jb) ?>"><?= e($jb) ?></option><?php endforeach; ?>
+          <?php if (!$jabatanList): ?><option value="">(tidak ada jabatan)</option><?php endif; ?>
+        </select>
+      </div>
+      <div class="col-12 hp-wrap" data-scope="pin">
+        <textarea class="form-control font-monospace" name="pin_manual" rows="2" placeholder="Contoh: 1001, 1002 1003"></textarea>
+        <div class="form-text">Pisahkan beberapa PIN dengan koma, spasi, atau baris baru.</div>
+      </div>
+      <div class="col-12 hp-wrap" data-scope="pilih">
+        <?php foreach ($mesinBerSn as $m): $daftar = $userMesin[$m['serial_number']] ?? []; ?>
+        <div class="hp-daftar" data-sn="<?= e($m['serial_number']) ?>">
+          <?php if (!$daftar): ?>
+            <div class="alert alert-light border small mb-0">
+              Daftar user mesin ini belum ada di server. Klik <b>Tarik Data</b> pada mesin ini di panel
+              <i>Salin User</i> di bawah, tunggu beberapa menit, lalu muat ulang halaman. Atau pakai pilihan lain (per rombel / ketik PIN).
+            </div>
+          <?php else: ?>
+          <div class="d-flex gap-2 mb-2 flex-wrap">
+            <input class="form-control form-control-sm hp-cari" style="max-width:260px" placeholder="Cari nama / PIN">
+            <button type="button" class="btn btn-sm btn-outline-secondary hp-semua">Centang semua yang tampil</button>
+            <button type="button" class="btn btn-sm btn-outline-secondary hp-kosong">Kosongkan</button>
+            <span class="small text-muted align-self-center"><span class="hp-jml">0</span> dipilih dari <?= count($daftar) ?> user</span>
+          </div>
+          <div class="table-responsive border rounded" style="max-height:320px; overflow:auto">
+            <table class="table table-sm table-hover align-middle mb-0">
+              <thead class="table-light" style="position:sticky; top:0"><tr><th style="width:36px"></th><th>PIN</th><th>Nama di Mesin</th>
+                <th class="text-end">Jari</th><th class="text-end">Wajah</th><th class="text-end">Palm</th></tr></thead>
+              <tbody>
+              <?php foreach ($daftar as $pin => $u): ?>
+                <tr>
+                  <td><input class="form-check-input" type="checkbox" name="pins[]" value="<?= e($pin) ?>"></td>
+                  <td class="font-monospace"><?= e($pin) ?></td>
+                  <td><?= e($u['nama']) ?></td>
+                  <td class="text-end"><?= $u['jari'] ?: '' ?></td>
+                  <td class="text-end"><?= $u['wajah'] ?: '' ?></td>
+                  <td class="text-end"><?= $u['palm'] ?: '' ?></td>
+                </tr>
+              <?php endforeach; ?>
+              </tbody>
+            </table>
+          </div>
+          <?php endif; ?>
+        </div>
+        <?php endforeach; ?>
+      </div>
+
+      <div class="col-12 d-flex align-items-center flex-wrap gap-2">
+        <button class="btn btn-danger"><i class="bi bi-trash me-1"></i>Hapus dari Mesin</button>
+        <span class="text-muted small">
+          Dikirim lewat antrean ADMS (perintah <code>DATA DELETE</code>). Yang dihapus hanya data di <b>mesin</b> —
+          riwayat absensi di aplikasi tetap aman. Penghapusan di mesin tidak bisa dibatalkan; user perlu didaftarkan ulang
+          (atau disalin lagi dari mesin lain) bila terhapus tidak sengaja.
         </span>
       </div>
     </form>
@@ -605,5 +824,54 @@ function toggleScope() {
   });
 }
 if (document.getElementById('up_scope')) toggleScope();
+
+// ---- Hapus user dari mesin ----
+function hpTampil() {
+  const form = document.getElementById('formHapus');
+  if (!form) return;
+  const scope = document.getElementById('hp_scope').value;
+  const mesin = document.getElementById('hp_mesin');
+  const sn = mesin.options[mesin.selectedIndex].dataset.sn;
+  form.querySelectorAll('.hp-wrap').forEach(w => w.style.display = w.dataset.scope === scope ? '' : 'none');
+  // Hanya daftar milik mesin terpilih yang ikut terkirim
+  form.querySelectorAll('.hp-daftar').forEach(d => {
+    const aktif = d.dataset.sn === sn;
+    d.style.display = aktif ? '' : 'none';
+    d.querySelectorAll('input[name="pins[]"]').forEach(c => c.disabled = !aktif);
+  });
+}
+(() => {
+  const form = document.getElementById('formHapus');
+  if (!form) return;
+  form.querySelectorAll('.hp-daftar').forEach(d => {
+    const hitung = () => { const j = d.querySelector('.hp-jml'); if (j) j.textContent = d.querySelectorAll('input[name="pins[]"]:checked').length; };
+    const cari = d.querySelector('.hp-cari');
+    if (!cari) return;
+    cari.addEventListener('input', () => {
+      const q = cari.value.toLowerCase();
+      d.querySelectorAll('tbody tr').forEach(tr => tr.style.display = tr.textContent.toLowerCase().includes(q) ? '' : 'none');
+    });
+    d.querySelector('.hp-semua').onclick = () => {
+      d.querySelectorAll('tbody tr').forEach(tr => { if (tr.style.display !== 'none') tr.querySelector('input').checked = true; });
+      hitung();
+    };
+    d.querySelector('.hp-kosong').onclick = () => { d.querySelectorAll('input[name="pins[]"]').forEach(c => c.checked = false); hitung(); };
+    d.addEventListener('change', hitung);
+  });
+  form.addEventListener('submit', e => {
+    const scope = document.getElementById('hp_scope').value;
+    const mesin = document.getElementById('hp_mesin');
+    const yang = document.getElementById('hp_yang');
+    let jumlah = '';
+    if (scope === 'pilih') {
+      const n = form.querySelectorAll('input[name="pins[]"]:checked:not(:disabled)').length;
+      if (!n) { e.preventDefault(); alert('Centang dulu user yang akan dihapus.'); return; }
+      jumlah = n + ' user';
+    }
+    const teks = `Hapus ${yang.options[yang.selectedIndex].text.toLowerCase()}${jumlah ? ' untuk ' + jumlah : ''} dari mesin "${mesin.options[mesin.selectedIndex].text}"?\n\nPenghapusan di mesin tidak bisa dibatalkan.`;
+    if (!confirm(teks)) e.preventDefault();
+  });
+  hpTampil();
+})();
 </script>
 <?php require_once __DIR__ . '/includes/footer.php'; ?>

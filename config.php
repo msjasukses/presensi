@@ -388,9 +388,43 @@ function admsPerintahUser(string $pin, string $nama, int $pri = 0): string {
     return "DATA UPDATE USERINFO PIN=$pin\tName=$nama\tPri=$pri\tPasswd=\tCard=\tGrp=1\tTZ=0000000000000000";
 }
 
-/** Perintah hapus user dari mesin. */
+/** Perintah hapus user dari mesin (ikut menghapus sidik jari, wajah & kartunya). */
 function admsPerintahHapusUser(string $pin): string {
     return "DATA DELETE USERINFO PIN=$pin";
+}
+
+/**
+ * Perintah hapus biometrik saja — user tetap ada di mesin (mis. untuk daftar ulang
+ * sidik jari/wajah). Dikirim dalam beberapa format karena firmware lama memakai
+ * FINGERTMP/FACE, sedangkan firmware baru menyimpan semuanya di BIODATA.
+ * @param string $jenis semua | jari | wajah
+ */
+function admsPerintahHapusBiometrik(string $pin, string $jenis = 'semua'): array {
+    $cmd = [];
+    if ($jenis !== 'wajah') {
+        $cmd[] = "DATA DELETE FINGERTMP PIN=$pin";
+        $cmd[] = "DATA DELETE BIODATA Pin=$pin\tType=1";
+    }
+    if ($jenis !== 'jari') {
+        $cmd[] = "DATA DELETE FACE PIN=$pin";
+        $cmd[] = "DATA DELETE BIODATA Pin=$pin\tType=2";
+        $cmd[] = "DATA DELETE BIODATA Pin=$pin\tType=9";
+    }
+    if ($jenis === 'semua') {
+        $cmd[] = "DATA DELETE BIODATA Pin=$pin\tType=8";   // palm
+    }
+    return $cmd;
+}
+
+/**
+ * PIN seseorang di mesin TANPA mengalokasikan PIN baru (untuk hapus user):
+ * pemetaan mesin_pin bila ada, selain itu nomor induk tanpa nol depan.
+ */
+function admsCariPin(PDO $pdo, string $tipe, string $nomorInduk): string {
+    $st = $pdo->prepare('SELECT pin FROM mesin_pin WHERE tipe=? AND nomor_induk=?');
+    $st->execute([$tipe, $nomorInduk]);
+    $pin = $st->fetchColumn();
+    return ($pin !== false && $pin !== '') ? (string)$pin : admsPinNormal($nomorInduk);
 }
 
 /** Masukkan perintah ke antrean; mesin mengambilnya lewat /iclock/getrequest. */

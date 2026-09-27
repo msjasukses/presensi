@@ -106,6 +106,10 @@ Cara ini menggantikan pengecekan soket TCP ke port 4370: pada ADMS mesin yang me
 
 Karena itu **alamat IP dan port mesin tidak lagi disimpan** — mesin dikenali sepenuhnya lewat serial number. Kolom `ip` dan `port` dihapus lewat `migrasi_hapus_ip_mesin.sql`.
 
+### Hapus user dari mesin
+
+Panel **Hapus User dari Mesin** di halaman Setting Mesin mengantrekan perintah `DATA DELETE` lewat ADMS. User dipilih dari daftar user mesin (hasil *Tarik Data*), per rombel / tingkat / jabatan, atau dengan mengetik PIN. Yang dihapus bisa user beserta seluruh biometrik & kartunya, atau biometriknya saja (semua / sidik jari / wajah) supaya bisa didaftarkan ulang. PIN orang dicari lewat `mesin_pin` tanpa mengalokasikan PIN baru. Perintah upload yang masih antre untuk PIN tersebut dibuang. Riwayat absensi di aplikasi dan pemetaan `mesin_pin` tidak ikut terhapus.
+
 ### Absensi kartu RFID
 
 Menu **Absensi Kartu RFID** (butuh `migrasi_kartu_rfid.sql`), memakai reader RFID USB mode keyboard (mengetik nomor kartu lalu Enter):
