@@ -1,7 +1,5 @@
 # Pengaturan khusus tiap server — jangan ikut ke repositori
 config.local.php
-config.php
-config.local.example.php
 
 # Folder sesi cadangan (dipakai bila folder temp sistem tidak bisa ditulis)
 /sessions/
